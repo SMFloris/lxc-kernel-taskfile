@@ -1,0 +1,95 @@
+version: '3'
+
+vars:
+  KERNEL_DIR: linux-6.0
+  KERNEL_ARCH: x86
+  CROSS_COMPILE:
+  CONTAINER_NAME:
+    sh: echo "kernel-{{.KERNEL_DIR}}-{{.KERNEL_ARCH}}" | tr -cd '[:alnum:]-'
+
+tasks:
+  cleanUp:
+    cmds:
+      - lxc stop {{.CONTAINER_NAME}} || true
+      - lxc delete {{.CONTAINER_NAME}} || true
+      - rm -rf ./output || true
+
+  launchKernelBuildContainer:
+    run: once
+    cmds:
+      - task: cleanUp
+      - lxc launch images:ubuntu/22.04 {{.CONTAINER_NAME}}
+    status:
+      - lxc info {{.CONTAINER_NAME}} | grep -v "Error"
+  
+  startKernelBuildContainer:
+    run: once
+    cmds:
+      - lxc info {{.CONTAINER_NAME}} | grep RUNNING || lxc start {{.CONTAINER_NAME}}
+    status:
+      - lxc info {{.CONTAINER_NAME}} | grep RUNNING
+
+  mountKernelInContainer:
+    run: once
+    deps:
+      - task: launchKernelBuildContainer
+    cmds:
+      - lxc config device remove {{.CONTAINER_NAME}} kernelDir || true
+      - echo "Mounting ${PWD}/{{.KERNEL_DIR}} to /origFiles in container {{.CONTAINER_NAME}}"
+      - lxc config device add {{.CONTAINER_NAME}} kernelDir disk source=${PWD}/{{.KERNEL_DIR}} path=/origFiles
+    status:
+      - lxc config device show {{.CONTAINER_NAME}} | grep kernelDir 
+
+  getKernelBuildDeps:
+    run: once
+    deps:
+      - task: mountKernelInContainer
+    cmds:
+      - lxc exec {{.CONTAINER_NAME}} -- sh -c "apt-get update"
+      - lxc exec {{.CONTAINER_NAME}} -- sh -c "apt-get install -y autoconf wget git fakeroot build-essential rsync ncurses-dev xz-utils libssl-dev bc flex libelf-dev bison ccache gcc-aarch64-linux-gnu"
+    status:
+      - lxc exec {{.CONTAINER_NAME}} -- sh -c "command -v make && command -v git && command -v rsync"
+
+  
+  buildKernelTreeInContainer:
+    run: once
+    deps:
+      - task: getKernelBuildDeps
+    cmds:
+      - lxc exec {{.CONTAINER_NAME}} -- sh -c "mkdir -p /build"
+      - lxc exec {{.CONTAINER_NAME}} -- sh -c "rsync -rlu /origFiles/ /build/"
+    status:
+      - lxc exec {{.CONTAINER_NAME}} -- sh -c "rsync -rl --dry-run --checksum --itemize-changes /origFiles/ /build/ | xargs test -z"
+  
+  configureKernel:
+    run: once
+    deps:
+      - task: buildKernelTreeInContainer
+    cmds:
+      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ls && pwd"
+      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ARCH={{.KERNEL_ARCH}} make defconfig"
+
+  buildDtbs:
+    run: once
+    cmds:
+      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ccache make -j $(nproc) ARCH={{.KERNEL_ARCH}} {{if ne .CROSS_COMPILE ""}}CROSS_COMPILE={{.CROSS_COMPILE}}{{end}} LOCALVERSION="-custom" dtbs" || echo "No dtb target for architecture. Ignoring"
+
+  buildKernel:
+    run: once
+    cmds:
+      - task: launchKernelBuildContainer
+      - task: startKernelBuildContainer
+      - task: mountKernelInContainer
+      - task: getKernelBuildDeps
+      - task: buildKernelTreeInContainer
+      - task: configureKernel
+      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ccache make -j $(nproc) ARCH={{.KERNEL_ARCH}} {{if ne .CROSS_COMPILE ""}}CROSS_COMPILE={{.CROSS_COMPILE}}{{end}} LOCALVERSION="-custom""
+      - task: buildDtbs
+      - rm -rf ./output_{{.KERNEL_ARCH}} && mkdir -p ./output_{{.KERNEL_ARCH}}
+      - lxc file pull -r {{.CONTAINER_NAME}}/build/arch/{{.KERNEL_ARCH}}/boot ./output_{{.KERNEL_ARCH}} && echo "Output has been copied."
+      - lxc stop {{.CONTAINER_NAME}}
+    status:
+      - test -d ./output_{{.KERNEL_ARCH}} && ls ./output_{{.KERNEL_ARCH}}/*/ >/dev/null 2>&1
+      - lxc exec {{.CONTAINER_NAME}} -- sh -c "rsync -rl --dry-run --checksum --itemize-changes /origFiles/ /build/ | xargs test -z"
+  
+  
