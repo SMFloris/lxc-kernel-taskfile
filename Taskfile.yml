@@ -1,18 +1,18 @@
 version: '3'
 
 vars:
-  KERNEL_DIR: linux-6.0
-  KERNEL_ARCH: x86
+  SRC_DIR: linux-6.0
+  ARCH: x86
   CROSS_COMPILE:
   CONTAINER_NAME:
-    sh: echo "kernel-{{.KERNEL_DIR}}-{{.KERNEL_ARCH}}" | tr -cd '[:alnum:]-'
+    sh: echo "kernel-{{.SRC_DIR}}-{{.ARCH}}" | tr -cd '[:alnum:]-'
 
 tasks:
   cleanUp:
     cmds:
       - lxc stop {{.CONTAINER_NAME}} || true
       - lxc delete {{.CONTAINER_NAME}} || true
-      - rm -rf ./output || true
+      - rm -rf ./output_{{.CONTAINER_NAME}} || true
 
   launchKernelBuildContainer:
     run: once
@@ -35,8 +35,8 @@ tasks:
       - task: launchKernelBuildContainer
     cmds:
       - lxc config device remove {{.CONTAINER_NAME}} kernelDir || true
-      - echo "Mounting ${PWD}/{{.KERNEL_DIR}} to /origFiles in container {{.CONTAINER_NAME}}"
-      - lxc config device add {{.CONTAINER_NAME}} kernelDir disk source=${PWD}/{{.KERNEL_DIR}} path=/origFiles
+      - echo "Mounting ${PWD}/{{.SRC_DIR}} to /origFiles in container {{.CONTAINER_NAME}}"
+      - lxc config device add {{.CONTAINER_NAME}} kernelDir disk source=${PWD}/{{.SRC_DIR}} path=/origFiles
     status:
       - lxc config device show {{.CONTAINER_NAME}} | grep kernelDir 
 
@@ -66,13 +66,12 @@ tasks:
     deps:
       - task: buildKernelTreeInContainer
     cmds:
-      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ls && pwd"
-      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ARCH={{.KERNEL_ARCH}} make defconfig"
+      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ARCH={{.ARCH}} make defconfig"
 
   buildDtbs:
     run: once
     cmds:
-      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ccache make -j $(nproc) ARCH={{.KERNEL_ARCH}} {{if ne .CROSS_COMPILE ""}}CROSS_COMPILE={{.CROSS_COMPILE}}{{end}} LOCALVERSION="-custom" dtbs" || echo "No dtb target for architecture. Ignoring"
+      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ccache make -j $(nproc) ARCH={{.ARCH}} {{if ne .CROSS_COMPILE ""}}CROSS_COMPILE={{.CROSS_COMPILE}}{{end}} LOCALVERSION="-custom" dtbs" || echo "No dtb target for architecture. Ignoring"
 
   buildKernel:
     run: once
@@ -83,13 +82,13 @@ tasks:
       - task: getKernelBuildDeps
       - task: buildKernelTreeInContainer
       - task: configureKernel
-      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ccache make -j $(nproc) ARCH={{.KERNEL_ARCH}} {{if ne .CROSS_COMPILE ""}}CROSS_COMPILE={{.CROSS_COMPILE}}{{end}} LOCALVERSION="-custom""
+      - lxc exec {{.CONTAINER_NAME}} --cwd /build -- sh -c "ccache make -j $(nproc) ARCH={{.ARCH}} {{if ne .CROSS_COMPILE ""}}CROSS_COMPILE={{.CROSS_COMPILE}}{{end}} LOCALVERSION="-custom""
       - task: buildDtbs
-      - rm -rf ./output_{{.KERNEL_ARCH}} && mkdir -p ./output_{{.KERNEL_ARCH}}
-      - lxc file pull -r {{.CONTAINER_NAME}}/build/arch/{{.KERNEL_ARCH}}/boot ./output_{{.KERNEL_ARCH}} && echo "Output has been copied."
+      - rm -rf ./output_{{.ARCH}} && mkdir -p ./output_{{.ARCH}}
+      - lxc file pull -r {{.CONTAINER_NAME}}/build/arch/{{.ARCH}}/boot ./output_{{.ARCH}} && echo "Output has been copied."
       - lxc stop {{.CONTAINER_NAME}}
     status:
-      - test -d ./output_{{.KERNEL_ARCH}} && ls ./output_{{.KERNEL_ARCH}}/*/ >/dev/null 2>&1
+      - test -d ./output_{{.ARCH}} && ls ./output_{{.ARCH}}/*/ >/dev/null 2>&1
       - lxc exec {{.CONTAINER_NAME}} -- sh -c "rsync -rl --dry-run --checksum --itemize-changes /origFiles/ /build/ | xargs test -z"
   
   
