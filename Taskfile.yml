@@ -1,13 +1,20 @@
 version: '3'
 
 vars:
-  SRC_DIR: linux-6.0
-  ARCH: x86
-  CROSS_COMPILE:
+  TAG: 
+    sh: echo ${TAG:-v6.0-rc2}
+  SRC_DIR: 
+    sh: echo "${SRC_DIR:-linux-{{.TAG}}}"
+  ARCH: 
+    sh: echo "${ARCH:-x86}"
   CONTAINER_NAME:
     sh: echo "kernel-{{.SRC_DIR}}-{{.ARCH}}" | tr -cd '[:alnum:]-'
 
 tasks:
+  getKernel:
+    cmds:
+      - git clone --depth 1 --branch {{.TAG}} git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux-{{.TAG}}
+
   cleanUp:
     cmds:
       - lxc stop {{.CONTAINER_NAME}} || true
@@ -31,8 +38,6 @@ tasks:
 
   mountKernelInContainer:
     run: once
-    deps:
-      - task: launchKernelBuildContainer
     cmds:
       - lxc config device remove {{.CONTAINER_NAME}} kernelDir || true
       - echo "Mounting ${PWD}/{{.SRC_DIR}} to /origFiles in container {{.CONTAINER_NAME}}"
@@ -78,6 +83,7 @@ tasks:
     cmds:
       - task: launchKernelBuildContainer
       - task: startKernelBuildContainer
+      - defer: lxc stop {{.CONTAINER_NAME}}
       - task: mountKernelInContainer
       - task: getKernelBuildDeps
       - task: buildKernelTreeInContainer
@@ -86,7 +92,6 @@ tasks:
       - task: buildDtbs
       - rm -rf ./output_{{.ARCH}} && mkdir -p ./output_{{.ARCH}}
       - lxc file pull -r {{.CONTAINER_NAME}}/build/arch/{{.ARCH}}/boot ./output_{{.ARCH}} && echo "Output has been copied."
-      - lxc stop {{.CONTAINER_NAME}}
     status:
       - test -d ./output_{{.ARCH}} && ls ./output_{{.ARCH}}/*/ >/dev/null 2>&1
       - lxc exec {{.CONTAINER_NAME}} -- sh -c "rsync -rl --dry-run --checksum --itemize-changes /origFiles/ /build/ | xargs test -z"
